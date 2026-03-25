@@ -323,60 +323,67 @@ function dumpModule(name) {
 }
 
 function loadAllDynamicLibrary(app_path) {
-    var defaultManager = ObjC.classes.NSFileManager.defaultManager();
-    var errorPtr = Memory.alloc(Process.pointerSize); 
-    Memory.writePointer(errorPtr, NULL); 
-    var filenames = defaultManager.contentsOfDirectoryAtPath_error_(app_path, errorPtr);
-    for (var i = 0, l = filenames.count(); i < l; i++) {
-        var file_name = filenames.objectAtIndex_(i);
-        var file_path = app_path.stringByAppendingPathComponent_(file_name);
-        if (file_name.hasSuffix_(".framework")) {
-            var bundle = ObjC.classes.NSBundle.bundleWithPath_(file_path);
-            if (bundle.isLoaded()) {
-                console.log("[frida-ios-dump]: " + file_name + " has been loaded. ");
-            } else {
-                if (bundle.load()) {
-                    console.log("[frida-ios-dump]: Load " + file_name + " success. ");
-                } else {
-                    console.log("[frida-ios-dump]: Load " + file_name + " failed. ");
+    // frida 16+: replaced ObjC NSFileManager/NSBundle with posix opendir/readdir + dlopen
+    var opendir_fn  = new NativeFunction(findExportByNameCompat('opendir'),  'pointer', ['pointer']);
+    var readdir_fn  = new NativeFunction(findExportByNameCompat('readdir'),  'pointer', ['pointer']);
+    var closedir_fn = new NativeFunction(findExportByNameCompat('closedir'), 'int',     ['pointer']);
+
+    var dir = opendir_fn(Memory.allocUtf8String(app_path));
+    if (dir.isNull()) return;
+
+    var SKIP_SUFFIXES = ['.bundle', '.momd', '.strings', '.appex', '.app', '.lproj', '.storyboardc'];
+    // iOS/macOS dirent layout (arm64): d_type at offset 20, d_name at offset 21
+    var DT_DIR = 4;
+
+    var entry;
+    while (!(entry = readdir_fn(dir)).isNull()) {
+        var d_name = entry.add(21).readUtf8String();
+        if (d_name === '.' || d_name === '..') continue;
+
+        var file_path = app_path + '/' + d_name;
+        var d_type = entry.add(20).readU8();
+
+        if (d_name.slice(-10) === '.framework') {
+            var is_loaded = false;
+            for (var j = 0; j < modules.length; j++) {
+                if (modules[j].path.indexOf(d_name) !== -1) {
+                    is_loaded = true;
+                    console.log("[frida-ios-dump]: " + d_name + " has been loaded.");
+                    break;
                 }
             }
-        } else if (file_name.hasSuffix_(".bundle") || 
-                   file_name.hasSuffix_(".momd") ||
-                   file_name.hasSuffix_(".strings") ||
-                   file_name.hasSuffix_(".appex") ||
-                   file_name.hasSuffix_(".app") ||
-                   file_name.hasSuffix_(".lproj") ||
-                   file_name.hasSuffix_(".storyboardc")) {
+            if (!is_loaded) {
+                // framework binary has same name as dir minus .framework suffix
+                var fw_binary = file_path + '/' + d_name.slice(0, -10);
+                if (dlopen(Memory.allocUtf8String(fw_binary), 9)) {
+                    console.log("[frida-ios-dump]: Load " + d_name + " success.");
+                } else {
+                    console.log("[frida-ios-dump]: Load " + d_name + " failed.");
+                }
+            }
+        } else if (SKIP_SUFFIXES.some(function(s) { return d_name.slice(-s.length) === s; })) {
             continue;
-        } else {
-            var isDirPtr = Memory.alloc(Process.pointerSize);
-            Memory.writePointer(isDirPtr,NULL);
-            defaultManager.fileExistsAtPath_isDirectory_(file_path, isDirPtr);
-            if (Memory.readPointer(isDirPtr) == 1) {
-                loadAllDynamicLibrary(file_path);
-            } else {
-                if (file_name.hasSuffix_(".dylib")) {
-                    var is_loaded = 0;
-                    for (var j = 0; j < modules.length; j++) {
-                        if (modules[j].path.indexOf(file_name) != -1) {
-                            is_loaded = 1;
-                            console.log("[frida-ios-dump]: " + file_name + " has been dlopen.");
-                            break;
-                        }
-                    } 
-
-                    if (!is_loaded) {
-                        if (dlopen(allocStr(file_path.UTF8String()), 9)) {
-                            console.log("[frida-ios-dump]: dlopen " + file_name + " success. ");
-                        } else {
-                            console.log("[frida-ios-dump]: dlopen " + file_name + " failed. ");
-                        }
-                    }
+        } else if (d_type === DT_DIR) {
+            loadAllDynamicLibrary(file_path);
+        } else if (d_name.slice(-6) === '.dylib') {
+            var is_loaded = 0;
+            for (var j = 0; j < modules.length; j++) {
+                if (modules[j].path.indexOf(d_name) !== -1) {
+                    is_loaded = 1;
+                    console.log("[frida-ios-dump]: " + d_name + " has been dlopen.");
+                    break;
+                }
+            }
+            if (!is_loaded) {
+                if (dlopen(Memory.allocUtf8String(file_path), 9)) {
+                    console.log("[frida-ios-dump]: dlopen " + d_name + " success.");
+                } else {
+                    console.log("[frida-ios-dump]: dlopen " + d_name + " failed.");
                 }
             }
         }
     }
+    closedir_fn(dir);
 }
 
 function handleMessage(message) {
@@ -387,7 +394,7 @@ function handleMessage(message) {
         var idx = modules[mi].path.indexOf('.app/');
         if (idx !== -1) { app_path = modules[mi].path.substring(0, idx + 4); break; }
     }
-    // loadAllDynamicLibrary(app_path); // SKIP: tersafe2/LBSDK/acert2 anti-cheat libs cause hang
+    loadAllDynamicLibrary(app_path); // SKIP: tersafe2/LBSDK/acert2 anti-cheat libs cause hang
     modules = getAllAppModules();
     for (var i = 0; i  < modules.length; i++) {
         console.log("start dump " + modules[i].path);
