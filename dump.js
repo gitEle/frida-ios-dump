@@ -1,4 +1,4 @@
-Module.ensureInitialized('Foundation');
+// Module.ensureInitialized removed in frida 16+, Foundation is always loaded on iOS
 
 var O_RDONLY = 0;
 var O_WRONLY = 1;
@@ -17,77 +17,77 @@ function putStr(addr, str) {
     if (typeof addr == "number") {
         addr = ptr(addr);
     }
-    return Memory.writeUtf8String(addr, str);
+    return addr.writeUtf8String(str);
 }
 
 function getByteArr(addr, l) {
     if (typeof addr == "number") {
         addr = ptr(addr);
     }
-    return Memory.readByteArray(addr, l);
+    return addr.readByteArray(l);
 }
 
 function getU8(addr) {
     if (typeof addr == "number") {
         addr = ptr(addr);
     }
-    return Memory.readU8(addr);
+    return addr.readU8();
 }
 
 function putU8(addr, n) {
     if (typeof addr == "number") {
         addr = ptr(addr);
     }
-    return Memory.writeU8(addr, n);
+    return addr.writeU8(n);
 }
 
 function getU16(addr) {
     if (typeof addr == "number") {
         addr = ptr(addr);
     }
-    return Memory.readU16(addr);
+    return addr.readU16();
 }
 
 function putU16(addr, n) {
     if (typeof addr == "number") {
         addr = ptr(addr);
     }
-    return Memory.writeU16(addr, n);
+    return addr.writeU16(n);
 }
 
 function getU32(addr) {
     if (typeof addr == "number") {
         addr = ptr(addr);
     }
-    return Memory.readU32(addr);
+    return addr.readU32();
 }
 
 function putU32(addr, n) {
     if (typeof addr == "number") {
         addr = ptr(addr);
     }
-    return Memory.writeU32(addr, n);
+    return addr.writeU32(n);
 }
 
 function getU64(addr) {
     if (typeof addr == "number") {
         addr = ptr(addr);
     }
-    return Memory.readU64(addr);
+    return addr.readU64();
 }
 
 function putU64(addr, n) {
     if (typeof addr == "number") {
         addr = ptr(addr);
     }
-    return Memory.writeU64(addr, n);
+    return addr.writeU64(n);
 }
 
 function getPt(addr) {
     if (typeof addr == "number") {
         addr = ptr(addr);
     }
-    return Memory.readPointer(addr);
+    return addr.readPointer();
 }
 
 function putPt(addr, n) {
@@ -97,16 +97,25 @@ function putPt(addr, n) {
     if (typeof n == "number") {
         n = ptr(n);
     }
-    return Memory.writePointer(addr, n);
+    return addr.writePointer(n);
 }
 
 function malloc(size) {
     return Memory.alloc(size);
 }
 
+function findExportByNameCompat(name) {
+    var mods = Process.enumerateModules();
+    for (var i = 0; i < mods.length; i++) {
+        var addr = mods[i].findExportByName(name);
+        if (addr) return addr;
+    }
+    return null;
+}
+
 function getExportFunction(type, name, ret, args) {
     var nptr;
-    nptr = Module.findExportByName(null, name);
+    nptr = findExportByNameCompat(name);
     if (nptr === null) {
         console.log("cannot find " + name);
         return null;
@@ -140,10 +149,10 @@ var access = getExportFunction("f", "access", "int", ["pointer", "int"]);
 var dlopen = getExportFunction("f", "dlopen", "pointer", ["pointer", "int"]);
 
 function getDocumentDir() {
-    var NSDocumentDirectory = 9;
-    var NSUserDomainMask = 1;
-    var npdirs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, 1);
-    return ObjC.Object(npdirs).objectAtIndex_(0).toString();
+    // frida 16+: avoid ObjC, use getenv("HOME")/Documents instead
+    var getenvFn = new NativeFunction(findExportByNameCompat('getenv'), 'pointer', ['pointer']);
+    var homeDir = getenvFn(Memory.allocUtf8String('HOME')).readUtf8String();
+    return homeDir + '/Documents';
 }
 
 function open(pathname, flags, mode) {
@@ -156,7 +165,7 @@ function open(pathname, flags, mode) {
 var modules = null;
 function getAllAppModules() {
     modules = new Array();
-    var tmpmods = Process.enumerateModulesSync();
+    var tmpmods = Process.enumerateModules();
     for (var i = 0; i < tmpmods.length; i++) {
         if (tmpmods[i].path.indexOf(".app") != -1) {
             modules.push(tmpmods[i]);
@@ -372,9 +381,13 @@ function loadAllDynamicLibrary(app_path) {
 
 function handleMessage(message) {
     modules = getAllAppModules();
-    var app_path = ObjC.classes.NSBundle.mainBundle().bundlePath();
-    loadAllDynamicLibrary(app_path);
-    // start dump
+    // frida 16+: derive app bundle path from module paths instead of ObjC NSBundle
+    var app_path = '';
+    for (var mi = 0; mi < modules.length; mi++) {
+        var idx = modules[mi].path.indexOf('.app/');
+        if (idx !== -1) { app_path = modules[mi].path.substring(0, idx + 4); break; }
+    }
+    // loadAllDynamicLibrary(app_path); // SKIP: tersafe2/LBSDK/acert2 anti-cheat libs cause hang
     modules = getAllAppModules();
     for (var i = 0; i  < modules.length; i++) {
         console.log("start dump " + modules[i].path);

@@ -94,6 +94,7 @@ def generate_ipa(path, display_name):
         finished.set()
 
 def on_message(message, data):
+    print(f"[DEBUG] on_message called: {message}")  # 加这行
     t = tqdm(unit='B',unit_scale=True,unit_divisor=1024,miniters=1)
     last_sent = [0]
 
@@ -271,7 +272,7 @@ def open_target_app(device, name_or_bundleid):
         else:
             session = device.attach(pid)
     except Exception as e:
-        print(e) 
+        print(e)
 
     return session, display_name, bundle_identifier
 
@@ -337,7 +338,9 @@ if __name__ == '__main__':
             (session, display_name, bundle_identifier) = open_target_app(device, name_or_bundleid)
             if output_ipa is None:
                 output_ipa = display_name
-            output_ipa = re.sub('\.ipa$', '', output_ipa)
+            # output_ipa = re.sub('\.ipa$', '', output_ipa)
+            output_ipa = re.sub(r'\.ipa$', '', output_ipa)
+
             if session:
                 start_dump(session, output_ipa)
         except paramiko.ssh_exception.NoValidConnectionsError as e:
